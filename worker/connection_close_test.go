@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/negasus/haproxy-spoe-go/client"
-	"github.com/negasus/haproxy-spoe-go/request"
+	"github.com/AndreiSec/haproxy-spoe-go/client"
+	"github.com/AndreiSec/haproxy-spoe-go/request"
 )
 
 func TestIsConnectionClose_EOF(t *testing.T) {

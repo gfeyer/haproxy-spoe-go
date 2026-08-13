@@ -3,10 +3,12 @@ package action
 import (
 	"fmt"
 
-	"github.com/negasus/haproxy-spoe-go/typeddata"
-	"github.com/negasus/haproxy-spoe-go/varint"
+	"github.com/AndreiSec/haproxy-spoe-go/typeddata"
+	"github.com/AndreiSec/haproxy-spoe-go/varint"
 )
 
+// Marshal appends the wire representation of the action to buf and returns the
+// result. On error buf is returned unchanged.
 func (action *Action) Marshal(buf []byte) ([]byte, error) {
 	var nb byte
 
@@ -16,25 +18,23 @@ func (action *Action) Marshal(buf []byte) ([]byte, error) {
 	case TypeUnsetVar:
 		nb = nbVarsUnsetVar
 	default:
-		return nil, fmt.Errorf("unexpected action type: %v", action.Type)
+		return buf, fmt.Errorf("unexpected action type: %v", action.Type)
 	}
 
-	buf = append(buf, byte(action.Type))
-	buf = append(buf, nb)
-	buf = append(buf, byte(action.Scope))
+	buf = append(buf, byte(action.Type), nb, byte(action.Scope))
 
-	b := make([]byte, 10)
-	n := varint.PutUvarint(b, uint64(len(action.Name)))
+	// Stack scratch space for the name length prefix
+	var b [maxVarintLen]byte
+	n := varint.PutUvarint(b[:], uint64(len(action.Name)))
 
 	buf = append(buf, b[:n]...)
 	buf = append(buf, action.Name...)
 
-	valueBuf, n, err := typeddata.Encode(action.Value, make([]byte, 0))
+	// Encode straight into buf rather than into a throwaway slice
+	buf, _, err := typeddata.Encode(action.Value, buf)
 	if err != nil {
-		return nil, err
+		return buf, err
 	}
-
-	buf = append(buf, valueBuf[:n]...)
 
 	return buf, nil
 }

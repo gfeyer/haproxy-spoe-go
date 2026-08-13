@@ -4,8 +4,19 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/negasus/haproxy-spoe-go/typeddata"
-	"github.com/negasus/haproxy-spoe-go/varint"
+	"github.com/AndreiSec/haproxy-spoe-go/internal/intern"
+	"github.com/AndreiSec/haproxy-spoe-go/typeddata"
+	"github.com/AndreiSec/haproxy-spoe-go/varint"
+)
+
+const (
+	// initialItems is the capacity a fresh KV starts with. A SPOE message
+	// carries a handful of arguments, so this is usually enough to never regrow.
+	initialItems = 8
+
+	// maxVarintLen is the largest number of bytes a uint64 takes in the SPOE
+	// varint encoding.
+	maxVarintLen = 10
 )
 
 var kvPool = sync.Pool{
@@ -29,14 +40,15 @@ type Item struct {
 }
 
 type KV struct {
-	m   []Item
-	tmp []byte
+	m []Item
+
+	// buf is the reusable encode buffer returned by Bytes
+	buf []byte
 }
 
 func NewKV() *KV {
 	kv := &KV{
-		m:   make([]Item, 0),
-		tmp: make([]byte, 10),
+		m: make([]Item, 0, initialItems),
 	}
 
 	return kv
@@ -46,8 +58,13 @@ func (kv *KV) Data() []Item {
 	return kv.m
 }
 
+// Reset drops all items, keeping the backing array for reuse. Entries are
+// zeroed so a released KV does not pin the strings and values it decoded.
 func (kv *KV) Reset() {
-	kv.m = make([]Item, 0)
+	for i := range kv.m {
+		kv.m[i] = Item{}
+	}
+	kv.m = kv.m[:0]
 }
 
 func (kv *KV) Add(key string, value interface{}) {
@@ -64,92 +81,115 @@ func (kv *KV) Get(key string) (interface{}, bool) {
 	return nil, false
 }
 
+// Bytes encodes the items into the KV's reusable buffer. The returned slice is
+// only valid until the next call to Bytes or Reset.
 func (kv *KV) Bytes() ([]byte, error) {
-	buf := make([]byte, 0)
+	kv.buf = kv.buf[:0]
 
-	for _, item := range kv.m {
-		n := varint.PutUvarint(kv.tmp, uint64(len(item.Name)))
-		buf = append(buf, kv.tmp[:n]...)
-		buf = append(buf, item.Name...)
+	var vb [maxVarintLen]byte
 
-		data, n, err := typeddata.Encode(item.Value, make([]byte, 0))
+	for i := range kv.m {
+		item := &kv.m[i]
+
+		n := varint.PutUvarint(vb[:], uint64(len(item.Name)))
+		kv.buf = append(kv.buf, vb[:n]...)
+		kv.buf = append(kv.buf, item.Name...)
+
+		var err error
+		kv.buf, _, err = typeddata.Encode(item.Value, kv.buf)
 		if err != nil {
 			return nil, err
 		}
-
-		buf = append(buf, data[:n]...)
 	}
 
-	return buf, nil
+	return kv.buf, nil
 }
 
+// Unmarshal decodes items from buf until it is consumed. Decoded values do not
+// reference buf.
 func (kv *KV) Unmarshal(buf []byte) error {
-	var key string
-	var value interface{}
-	var n int
-	var err error
-	var keyLen uint64
+	return kv.UnmarshalOpts(buf, typeddata.Options{})
+}
 
-	for {
-		if len(buf) == 0 {
-			break
-		}
-
-		keyLen, n = varint.Uvarint(buf)
-		buf = buf[n:]
-		if len(buf) < int(keyLen) {
-			return fmt.Errorf("error unmarshal KV, wrong buf len. Expect %d, got %d", keyLen, len(buf))
-		}
-
-		key = string(buf[:keyLen])
-		buf = buf[keyLen:]
-
-		value, n, err = typeddata.Decode(buf)
+// UnmarshalOpts decodes items from buf until it is consumed, with the given
+// decode options.
+func (kv *KV) UnmarshalOpts(buf []byte, opts typeddata.Options) error {
+	for len(buf) > 0 {
+		n, err := kv.unmarshalItem(buf, opts)
 		if err != nil {
 			return err
 		}
 		buf = buf[n:]
-
-		kv.m = append(kv.m, Item{key, value})
 	}
 
 	return nil
 }
 
+// UnmarshalNB decodes count items from buf and returns the number of bytes
+// consumed. Decoded values do not reference buf.
 func (kv *KV) UnmarshalNB(buf []byte, count int) (int, error) {
-	var key string
-	var value interface{}
-	var n int
-	var err error
-	var keyLen uint64
+	return kv.UnmarshalNBOpts(buf, count, typeddata.Options{})
+}
 
+// UnmarshalNBOpts decodes count items from buf with the given decode options and
+// returns the number of bytes consumed.
+func (kv *KV) UnmarshalNBOpts(buf []byte, count int, opts typeddata.Options) (int, error) {
 	var readBytes int
+
+	// Make room for the whole batch in one allocation. An item needs at least
+	// two bytes on the wire, so a count beyond that is malformed and must not
+	// drive an allocation.
+	if count > 0 && count <= len(buf)/2 && cap(kv.m)-len(kv.m) < count {
+		kv.grow(count)
+	}
 
 	for i := 0; i < count; i++ {
 		if len(buf) == 0 {
 			return readBytes, fmt.Errorf("buffer unexpectly end")
 		}
 
-		keyLen, n = varint.Uvarint(buf)
-		buf = buf[n:]
-		readBytes += n
-		if len(buf) < int(keyLen) {
-			return readBytes, fmt.Errorf("error unmarshal KV, wrong buf len. Expect %d, got %d", keyLen, len(buf))
-		}
-
-		key = string(buf[:keyLen])
-		buf = buf[keyLen:]
-		readBytes += int(keyLen)
-
-		value, n, err = typeddata.Decode(buf)
+		n, err := kv.unmarshalItem(buf, opts)
 		if err != nil {
 			return readBytes, err
 		}
+
 		buf = buf[n:]
 		readBytes += n
-
-		kv.m = append(kv.m, Item{key, value})
 	}
 
 	return readBytes, nil
+}
+
+// unmarshalItem decodes a single name/value pair and returns its size in buf.
+func (kv *KV) unmarshalItem(buf []byte, opts typeddata.Options) (int, error) {
+	keyLen, n := varint.Uvarint(buf)
+	if n < 0 {
+		return 0, fmt.Errorf("error unmarshal KV, truncated key length")
+	}
+	buf = buf[n:]
+
+	if uint64(len(buf)) < keyLen {
+		return 0, fmt.Errorf("error unmarshal KV, wrong buf len. Expect %d, got %d", keyLen, len(buf))
+	}
+
+	// Keys come from the HAProxy configuration, so the same handful of names
+	// arrive with every frame. Interning them keeps decoding allocation free.
+	key := intern.String(buf[:keyLen])
+	buf = buf[keyLen:]
+
+	value, vn, err := typeddata.DecodeOpts(buf, opts)
+	if err != nil {
+		return 0, err
+	}
+
+	kv.m = append(kv.m, Item{key, value})
+
+	return n + int(keyLen) + vn, nil
+}
+
+// grow makes room for n more items in a single allocation.
+func (kv *KV) grow(n int) {
+	m := make([]Item, len(kv.m), len(kv.m)+n)
+	copy(m, kv.m)
+	kv.m = m
 }

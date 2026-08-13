@@ -3,9 +3,9 @@ package agent
 import (
 	"net"
 
-	"github.com/negasus/haproxy-spoe-go/logger"
-	"github.com/negasus/haproxy-spoe-go/request"
-	"github.com/negasus/haproxy-spoe-go/worker"
+	"github.com/AndreiSec/haproxy-spoe-go/logger"
+	"github.com/AndreiSec/haproxy-spoe-go/request"
+	"github.com/AndreiSec/haproxy-spoe-go/worker"
 )
 
 func New(handler func(*request.Request), logger logger.Logger) *Agent {

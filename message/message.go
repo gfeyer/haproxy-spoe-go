@@ -3,7 +3,7 @@ package message
 import (
 	"sync"
 
-	"github.com/negasus/haproxy-spoe-go/payload/kv"
+	"github.com/AndreiSec/haproxy-spoe-go/payload/kv"
 )
 
 var messagePool = sync.Pool{
@@ -18,8 +18,10 @@ type Message struct {
 }
 
 func newMessage() *Message {
+	// The KV is owned by the message for its whole lifetime, so it is created
+	// directly instead of being borrowed from the KV pool.
 	m := &Message{
-		KV: kv.AcquireKV(),
+		KV: kv.NewKV(),
 	}
 
 	return m
@@ -39,9 +41,11 @@ func ReleaseMessage(m *Message) {
 	messagePool.Put(m)
 }
 
+// Reset clears the message for reuse. The KV is kept rather than handed back to
+// its pool: it belongs to this message for as long as the message is pooled, and
+// keeping it preserves its already grown item buffer.
 func (m *Message) Reset() {
 	m.Name = ""
 
-	kv.ReleaseKV(m.KV)
-	m.KV = kv.AcquireKV()
+	m.KV.Reset()
 }

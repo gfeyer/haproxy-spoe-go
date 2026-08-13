@@ -1,5 +1,26 @@
 # Changelog
 
+# unreleased
+
+- perf: reuse the KV item buffer across resets instead of dropping it, which was
+  the bulk of what decoding a frame allocated
+- perf: intern message names and argument keys, which repeat on every frame
+- perf: keep a message's KV instead of returning it to the pool and taking a new
+  one on every reset
+- perf: encode frames into a buffer owned by the frame and write once, removing
+  the per frame `bytes.Buffer` and payload slices from the ack path
+- perf: grow the frame read buffer in rounded steps so a stream of similarly
+  sized frames allocates once
+- feat: `frame.SetNoCopyStrings` decodes string arguments in place, removing one
+  allocation per string argument. Off by default: it limits the lifetime of
+  decoded strings to the handler call
+- feat: `frame.MaxFrameLen` bounds the accepted frame length
+- fix: a five byte packet declaring a zero frame length made the reader try to
+  allocate 4GB
+- fix: truncated frames could panic instead of returning an error
+- fix: encoding an integer of 2^54 or more could panic, the varint scratch buffer
+  was 8 bytes where the encoding needs up to 10
+
 # v1.0.7 (2025-08-18)
 
 - worker: wait for in-flight Notify handlers before closing (#26) Simon Taranto* 

@@ -1,11 +1,10 @@
 package worker
 
 import (
-	"bytes"
 	"fmt"
 
-	"github.com/negasus/haproxy-spoe-go/frame"
-	"github.com/negasus/haproxy-spoe-go/request"
+	"github.com/AndreiSec/haproxy-spoe-go/frame"
+	"github.com/AndreiSec/haproxy-spoe-go/request"
 )
 
 func (w *worker) processNotifyFrame(f *frame.Frame) {
@@ -36,20 +35,11 @@ func (w *worker) processNotifyFrame(f *frame.Frame) {
 	}
 }
 
+// writeFrame encodes f straight to the connection. Encode buffers internally and
+// issues a single Write, so no intermediate buffer is needed here.
 func (w *worker) writeFrame(f *frame.Frame) error {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	n, err := f.Encode(buf)
-	if err != nil {
-		return fmt.Errorf("cannot marshal frame: %w", err)
-	}
-
-	n, err = w.conn.Write(buf.Bytes())
-	if err != nil {
+	if _, err := f.Encode(w.conn); err != nil {
 		return fmt.Errorf("cannot write frame to connection: %w", err)
-	}
-
-	if n != buf.Len() {
-		return fmt.Errorf("wrote wrong number of bytes count %d, expect %d", n, buf.Len())
 	}
 
 	return nil

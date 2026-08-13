@@ -5,6 +5,10 @@ type Type byte
 type Scope byte
 
 const (
+	// maxVarintLen is the largest number of bytes a uint64 takes in the SPOE
+	// varint encoding.
+	maxVarintLen = 10
+
 	nbVarsSetVar   byte = 0x03
 	nbVarsUnsetVar byte = 0x02
 
